@@ -1,37 +1,80 @@
-name:  Gemini PR Summarizer Agent
+name: Automated PR Reviewer
 
 on:
-  # This event acts as the webhook listener, triggering on PR lifecycle changes
   pull_request:
-    types: [opened, reopened, synchronize] # Runs when PR is created or updated
+    types: [opened, synchronize, reopened]
 
 jobs:
-  summarize_pr:
+  review_and_summarize:
     runs-on: ubuntu-latest
-    
-    # Grant permissions for the script to read the code and post comments
+
     permissions:
-      contents: read
-      pull-requests: write 
+      contents: write
+      pull-requests: write
 
     steps:
-      - name:  Checkout Repository Code
+
+      - name: Checkout PR code
         uses: actions/checkout@v4
-        
-      - name:  Set up Python Environment
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          
-      - name:  Install Python Dependencies
-        run: pip install google-genai PyGithub requests
-        
-      - name:  Run Gemini Summarization Agent
-        # Environment variables inject necessary data from the GitHub webhook payload
+          python-version: "3.11"
+
+      - name: Install Dependencies
+        run: |
+          pip install google-genai PyGithub semgrep requests
+
+      - name: Run Semgrep
+        run: |
+          mkdir -p analysis_output
+          semgrep --config auto --json > analysis_output/semgrep_output.json || true
+        env:
+          SEMGREP_CONFIG: auto
+
+      - name: Fetch PR Diff
+        run: gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate PR Summary & Metadata
+        id: llm
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          REPO_FULL_NAME: ${{ github.repository }} 
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
-        run: python pr_summary_agent.py
+          SEMGREP_CONFIG: auto
+        run: |
+          OUTPUT=$(python llm.py pr_diff.patch analysis_output/semgrep_output.json)
+          {
+            echo "summary<<EOF"
+            echo "$OUTPUT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
+      - name: Save Semgrep Report to MAIN branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main
+          git checkout main
+
+          mkdir -p semgrep_reports
+          DATE=$(date +"%Y-%m-%d")
+
+          # Pretty print JSON using jq
+          jq '.' analysis_output/semgrep_output.json \
+            > semgrep_reports/pr${{ github.event.pull_request.number }}_${DATE}.json
+
+          git add semgrep_reports/
+          git commit -m "Add Semgrep metadata for PR ${{ github.event.pull_request.number }}"
+          git push origin main
+
+
+      - name: Post PR Review Comment
+        uses: thollander/actions-comment-pull-request@v3
+        with:
+          message: |
+            ## 🤖 Automated PR Review
+            ${{ steps.llm.outputs.summary }}
