@@ -34,8 +34,13 @@ if os.path.exists(diff_path):
         with open(diff_path, "r", encoding="utf-8") as f:
             diff_content = f.read()
     except Exception as e:
-        print(f"Error reading diff file: {e}")
+        print(f"FATAL ERROR: Could not read diff file at {diff_path}: {e}")
         sys.exit(1)
+else:
+    # If the file simply doesn't exist (most likely error), print clear error and exit
+    print(f"FATAL ERROR: PR diff file not found at expected path: {diff_path}")
+    print("Check the 'Fetch PR Diff' step output to ensure the file was created.")
+    sys.exit(1)
 
 if len(diff_content.strip()) < 10:
     print("Diff missing or too small to review. Exiting.")
@@ -138,6 +143,7 @@ except APIError as e:
 except Exception as e:
     print(f"An unexpected error occurred: {e}")
     sys.exit(1)
+
 
 
 
