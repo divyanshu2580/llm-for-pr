@@ -46,6 +46,13 @@ if len(diff_content.strip()) < 10:
     print("Diff missing or too small to review. Exiting.")
     # Exit code 0 so the workflow doesn't fail, but the review is skipped
     sys.exit(0)
+MAX_DIFF_CHARS = 15000 # Keep the diff under ~15,000 characters
+
+if len(diff_content) > MAX_DIFF_CHARS:
+    diff_content = diff_content[:MAX_DIFF_CHARS]
+    analysis_metadata['diff_truncated'] = True
+    print(f"Warning: Diff content truncated to {MAX_DIFF_CHARS} characters to fit context window.")
+# --- END ADDED LOGIC ---
 
 # READ SEMGREP JSON
 semgrep_json = {}
@@ -143,6 +150,7 @@ except APIError as e:
 except Exception as e:
     print(f"An unexpected error occurred: {e}")
     sys.exit(1)
+
 
 
 
