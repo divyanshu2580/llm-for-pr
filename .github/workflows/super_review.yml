@@ -35,7 +35,7 @@ jobs:
 
 
       - name: Fetch PR Diff
-        run: gh pr diff 13 --patch > pr_diff.patch
+        run: gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -80,4 +80,5 @@ jobs:
           message: |
             ## Automated PR Review
             ${{ steps.llm.outputs.summary }}
+
 
