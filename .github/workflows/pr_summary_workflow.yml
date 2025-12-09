@@ -1,5 +1,6 @@
 name: Automated PR Reviewer
 
+# Triggers when a Pull Request is opened, reopened, or synchronized (new commit push)
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -8,76 +9,52 @@ jobs:
   review_and_summarize:
     runs-on: ubuntu-latest
 
+    # Set necessary permissions for reading code and writing a comment
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read 
+      pull-requests: write 
 
     steps:
 
       - name: Checkout PR code
         uses: actions/checkout@v4
-
+        
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Dependencies
+        # Install the Python libraries + Semgrep and gh CLI tools
         run: |
-          pip install google-genai PyGithub semgrep requests
+          pip install google-genai PyGithub requests
+          sudo apt-get update && sudo apt-get install -y semgrep gh jq
 
-      - name: Run Semgrep
+      - name: Fetch PR Diff
+        # Use GitHub CLI (gh) to fetch the unified diff and save it to a file
+        run: gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Use default token for gh CLI
+
+      - name: Run Semgrep and Save JSON
+        # Run Semgrep analysis across the entire checked-out repository code
         run: |
           mkdir -p analysis_output
+          # Run Semgrep, output JSON to the specified path. 
+          # || true prevents the workflow from failing if Semgrep finds issues.
           semgrep --config auto --json > analysis_output/semgrep_output.json || true
         env:
           SEMGREP_CONFIG: auto
 
-      - name: Fetch PR Diff
-        run: gh pr diff ${{ github.event.pull_request.number }} --patch > pr_diff.patch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate PR Summary & Metadata
-        id: llm
+      - name: Generate and Post PR Review
+        # This step executes the Python script, passing the file paths as arguments.
+        # The Python script handles the Gemini API call and posts the comment directly.
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Essential Metadata for PyGithub logic:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          SEMGREP_CONFIG: auto
+          REPO_FULL_NAME: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          OUTPUT=$(python pr_summary_agent.py pr_diff.patch analysis_output/semgrep_output.json)
-          {
-            echo "summary<<EOF"
-            echo "$OUTPUT"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Save Semgrep Report to MAIN branch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin main
-          git checkout main
-
-          mkdir -p semgrep_reports
-          DATE=$(date +"%Y-%m-%d")
-
-          # Pretty print JSON using jq
-          jq '.' analysis_output/semgrep_output.json \
-            > semgrep_reports/pr${{ github.event.pull_request.number }}_${DATE}.json
-
-          git add semgrep_reports/
-          git commit -m "Add Semgrep metadata for PR ${{ github.event.pull_request.number }}"
-          git push origin main
-
-
-      - name: Post PR Review Comment
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          message: |
-            ##  Automated PR Review
-            ${{ steps.llm.outputs.summary }}
-
-
-
+          # Pass diff path (sys.argv[1]) and semgrep output path (sys.argv[2])
+          python pr_summary_agent.py pr_diff.patch analysis_output/semgrep_output.json
