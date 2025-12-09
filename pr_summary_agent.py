@@ -39,7 +39,14 @@ def read_inputs():
             diff_content = f.read()
 
     if len(diff_content) < 10:
-        print("Diff missing or too small. Exiting.")
+        # Check if critical GitHub metadata is missing before exiting
+        if not (api_key and github_token and repo_full_name and pr_number):
+            print("Critical metadata missing. Skipping small diff.")
+            sys.exit(0)
+            
+        print("Diff missing or too small. Posting exit message.")
+        # Attempt to post a message if the diff is too small
+        post_review("## Agent Status\n\nNo significant code diff detected to review.", check_metadata=False)
         sys.exit(0)
 
     semgrep_json = {}
@@ -56,10 +63,11 @@ def read_inputs():
 
 # --- GitHub Posting Logic ---
 
-def post_review(review_text):
+def post_review(review_text, check_metadata=True):
     """Posts the generated review as a comment on the Pull Request."""
     
-    if not (github_token and repo_full_name and pr_number):
+    # Check if essential metadata is available
+    if check_metadata and not (github_token and repo_full_name and pr_number):
         print("Error: Missing GitHub token or PR metadata. Cannot post review.")
         print(f"Generated Review:\n{review_text}")
         return
@@ -85,8 +93,7 @@ def post_review(review_text):
 
 # --- LLM System Prompt and Execution ---
 
-# **IMPORTANT:** This is the persona definition, passed separately to the API.
-# It MUST be a concise, instruction-only string.
+# **IMPORTANT:** This is the persona definition, which will now be passed inside the contents array
 LLM_PERSONA = "You are an expert technical PR reviewer. Your tone is professional and focused on actionable risks. Analyze the provided Git diff and Semgrep metadata to produce a structured review."
 
 def create_mega_prompt(diff_content, semgrep_json):
@@ -138,30 +145,46 @@ def call_gemini_api(mega_prompt):
     
     if not api_key:
         print("Error: GEMINI_API_KEY is not set.")
-        sys.exit(1)
+        # Fail gracefully by returning an error message
+        return "Gemini API Call Failed: API Key is missing from the environment."
         
     try:
         client = genai.Client(api_key=api_key)
         
-        # We separate the content into the system instruction and the user message
+        # FIX: The system instruction is now passed as a 'system' role part
+        # within the contents list to ensure compatibility and correct parsing.
+        contents = [
+            {"role": "system", "parts": [{"text": LLM_PERSONA}]},
+            {"role": "user", "parts": [{"text": mega_prompt}]}
+        ]
+
         response = client.models.generate_content(
             model=GEMINI_MODEL,
-            system_instruction=LLM_PERSONA,
-            contents=[
-                {"role": "user", "parts": [{"text": mega_prompt}]}
-            ]
+            contents=contents
         )
         return response.text.strip()
     
     except Exception as e:
         print(f"Error during Gemini API call: {e}")
-        return f"Gemini API Call Failed. Check service connection or API key validity."
+        return f"Gemini API Call Failed. Exception: {str(e)[:100]}..."
 
 
 # --- Main Execution ---
 
 if __name__ == "__main__":
     
+    # Check for critical variables immediately at the start of execution
+    if not (api_key and github_token and repo_full_name and pr_number):
+        missing = []
+        if not api_key: missing.append("GEMINI_API_KEY")
+        if not github_token: missing.append("GITHUB_TOKEN")
+        if not repo_full_name: missing.append("REPO_FULL_NAME")
+        if pr_number is None: missing.append("PR_NUMBER")
+        
+        # If critical envs are missing, we cannot proceed or post a message.
+        print(f"CRITICAL ERROR: Missing environment variables: {', '.join(missing)}. Please check YAML configuration.")
+        sys.exit(1)
+
     # 1. Read Inputs
     diff_content, semgrep_json = read_inputs()
 
@@ -173,7 +196,7 @@ if __name__ == "__main__":
     review_output = call_gemini_api(mega_prompt)
 
     # 4. Post Output to GitHub
-    post_review(review_output)
+    post_review(review_output, check_metadata=False)
 
     # For debugging in the CI runner
     print("\n--- Final Review Output ---\n")
