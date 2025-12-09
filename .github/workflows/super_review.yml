@@ -9,16 +9,15 @@ jobs:
   review_and_summarize:
     runs-on: ubuntu-latest
 
-    # Necessary permissions for checking out code, fetching diff, and posting comments
     permissions:
       contents: write
       pull-requests: write
+      # The rest of the job relies on these permissions.
 
     steps:
 
       - name: Checkout PR code
         uses: actions/checkout@v4
-        # Fetch depth 0 gets the entire history needed for Semgrep and other tools
         with:
           fetch-depth: 0
 
@@ -39,35 +38,49 @@ jobs:
         env:
           SEMGREP_CONFIG: p/ci 
 
-      # --- 2. FETCH PR DIFF (FIXED: Using API for reliability) ---
+      # --- 2. FETCH PR DIFF (MODIFIED WITH JS ERROR HANDLING) ---
       - name: Fetch PR Diff using API
         id: fetch_diff
         uses: actions/github-script@v7
         with:
+          # Note: We need to use 'core.setFailed' from @actions/core, which is implicitly available
           script: |
             const pr_number = context.issue.number;
-            const diff = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr_number,
-              headers: {
-                'Accept': 'application/vnd.github.v3.patch'
-              }
-            });
-            require('fs').writeFileSync('pr_diff.patch', diff.data);
 
-      # --- 3. GENERATE LLM SUMMARY (MODIFIED) ---
+            try {
+              const diff = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr_number,
+                headers: {
+                  'Accept': 'application/vnd.github.v3.patch'
+                }
+              });
+
+              // Check if the diff data is valid and non-empty
+              if (diff.data && diff.data.length > 0) {
+                require('fs').writeFileSync('pr_diff.patch', diff.data);
+                console.log('Successfully created pr_diff.patch with content.');
+              } else {
+                // Fail if the API returns a valid response but the diff payload is empty
+                core.setFailed("GitHub API returned empty diff data for the PR. Check if the PR has code changes.");
+              }
+            } catch (error) {
+              // Catch any network or authentication errors from the GitHub API call
+              core.setFailed(`Failed to fetch PR diff from API: ${error.message}`);
+            }
+
+      # --- 3. GENERATE LLM SUMMARY ---
       - name: Generate PR Summary & Metadata
         id: llm
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # 🚨 SOLUTION 2: ADDED GITHUB CONTEXT VARIABLES 🚨
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_FULL_NAME: ${{ github.repository }} 
           SEMGREP_CONFIG: auto
         run: |
-          # Pass the diff and semgrep output paths to your Python script
+          # The 2>&1 ensures Python errors are captured into OUTPUT
           OUTPUT=$(python llm.py pr_diff.patch analysis_output/semgrep_output.json 2>&1)
           
           # Use GITHUB_OUTPUT to pass the LLM's summary text to the next step
@@ -78,7 +91,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # --- 4. SAVE SEMGREP REPORT TO MAIN BRANCH ---
-      # (This step still carries a risk of failure due to token permission on push)
+      # (Still carries a risk of permission failure on git push)
       - name: Save Semgrep Report to MAIN branch
         run: |
           git config user.name "github-actions[bot]"
@@ -110,4 +123,3 @@ jobs:
             and static analysis results.
             
             ${{ steps.llm.outputs.summary }}
-
