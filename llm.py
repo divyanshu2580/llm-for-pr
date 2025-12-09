@@ -89,14 +89,16 @@ Your goal is to analyze the provided PR diff and static analysis data, and gener
 ### CONSTRAINTS
 - The total review text must be concise (strive for under 140 words).
 - Your review must adhere *strictly* to the output format provided in the User Prompt.
-- **Rules:** Do not invent information. Use only the provided diff and metadata.
+- **NEGATIVE CONSTRAINT:** 
+-Only analyze and discuss the changes and context explicitly present in the 'PR Diff' block. Do not comment on existing code that was not modified in the diff.
+- Do not invent information. Use only the provided diff and metadata.
 """
 
 # 2. User Prompt (The Instruction and Desired Output Format)
 UserPrompt = """
 Generate the automated PR review summary based *only* on the input data above.
 
-**Output Format (use markdown headings and bullets):**
+**Output Format (use markdown headings and bullets in this exact order):**
 
 ## Why It Matters
 [A short paragraph explaining the impact (e.g., bug fix, new feature, performance)]
@@ -115,9 +117,16 @@ Generate the automated PR review summary based *only* on the input data above.
 # --- CALL GEMINI ---
 client = genai.Client(api_key=api_key)
 try:
+    # --- Using the explicit role-based structure ---
+    contents = [
+        {"role": "system", "parts": [{"text": SystemPrompt}]},
+        {"role": "user", "parts": [{"text": UserPrompt}]}
+    ]
+    
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=[SystemPrompt, UserPrompt], # Pass as list for multi-turn context
+        contents=contents, 
+        config={"response_mime_type": "text/markdown"} # Explicitly request Markdown output
     )
     # Print the raw text output, which is captured by the GitHub Action
     print(response.text.strip())
@@ -128,4 +137,5 @@ except APIError as e:
 except Exception as e:
     print(f"An unexpected error occurred: {e}")
     sys.exit(1)
+
 
